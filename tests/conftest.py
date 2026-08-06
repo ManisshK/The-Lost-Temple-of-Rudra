@@ -12,7 +12,64 @@ import sys
 import os
 
 # Ensure src/ is on the path regardless of how pytest is invoked
-sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "src"))
+_src_path = os.path.normpath(os.path.join(os.path.dirname(__file__), "..", "src"))
+_root_path = os.path.normpath(os.path.join(os.path.dirname(__file__), ".."))
+
+if _src_path not in sys.path:
+    sys.path.insert(0, _src_path)
+if _root_path not in sys.path:
+    sys.path.insert(0, _root_path)
+
+# ---------------------------------------------------------------------------
+# Prevent duplicate module loading: ensure 'world' and 'src.world' are the
+# same Python module objects. We do this by loading the canonical versions
+# under both names before any test modules are imported.
+# ---------------------------------------------------------------------------
+import importlib as _il
+
+def _ensure_module_alias(bare: str) -> None:
+    """Load 'bare' package and register it under both 'bare' and 'src.bare'."""
+    src_name = f"src.{bare}"
+    if bare not in sys.modules:
+        _il.import_module(bare)
+    if src_name not in sys.modules:
+        sys.modules[src_name] = sys.modules[bare]
+    elif sys.modules[src_name] is not sys.modules[bare]:
+        # Already loaded under both names → alias one to the other
+        # Prefer the 'world' (src-path) version as canonical
+        sys.modules[src_name] = sys.modules[bare]
+
+for _pkg in ("world", "engine", "utils"):
+    try:
+        _ensure_module_alias(_pkg)
+    except ImportError:
+        pass
+
+# Now ensure all submodules are aliased too
+def _alias_submodules(pkg_name: str) -> None:
+    import pkgutil
+    try:
+        pkg = sys.modules[pkg_name]
+    except KeyError:
+        return
+    pkg_path = getattr(pkg, "__path__", None)
+    if pkg_path is None:
+        return
+    for info in pkgutil.iter_modules(pkg_path):
+        submod = f"{pkg_name}.{info.name}"
+        src_submod = f"src.{submod}"
+        if submod not in sys.modules:
+            try:
+                _il.import_module(submod)
+            except ImportError:
+                continue
+        if src_submod not in sys.modules:
+            sys.modules[src_submod] = sys.modules[submod]
+        elif sys.modules[src_submod] is not sys.modules[submod]:
+            sys.modules[src_submod] = sys.modules[submod]
+
+for _pkg in ("world", "engine", "utils"):
+    _alias_submodules(_pkg)
 
 import pytest
 

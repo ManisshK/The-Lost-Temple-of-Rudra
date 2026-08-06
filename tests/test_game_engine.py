@@ -430,33 +430,104 @@ class TestInventoryCommands:
 
 
 # ---------------------------------------------------------------------------
-# Puzzle commands (stub)
+# Puzzle commands — Phase 5
 # ---------------------------------------------------------------------------
 
 class TestPuzzleCommands:
-    def test_rotate_returns_success(self, engine_two_rooms):
+    def test_rotate_no_puzzle_in_room_returns_failure(self, engine_two_rooms):
+        """Rotating with no puzzle in room returns FAILURE (Phase 5 real logic)."""
         engine, _ = engine_two_rooms
         r = engine.process_input("rotate statue")
-        assert r.status == ResultStatus.SUCCESS
+        assert r.status == ResultStatus.FAILURE
 
-    def test_pull_lever_returns_success(self, engine_two_rooms):
-        engine, _ = engine_two_rooms
-        r = engine.process_input("pull lever")
-        assert r.status == ResultStatus.SUCCESS
-
-    def test_recklessness_increases_without_prior_observation(self, engine_two_rooms):
+    def test_rotate_no_puzzle_increases_recklessness(self, engine_two_rooms):
+        """Acting on a puzzle command with no puzzle present tracks recklessness."""
         engine, wm = engine_two_rooms
-        # Add a statue object to test recklessness tracking
-        wm.objects["statue_01"] = ObjectState(
-            object_id="statue_01",
-            name="Guardian Statue",
-            category=ObjectCategory.PUZZLE,
-            current_room="temple_entrance",
-        )
-        wm.rooms["temple_entrance"].object_ids_present.append("statue_01")
         before = wm.evaluation.recklessness.score
         engine.process_input("rotate statue")
         assert wm.evaluation.recklessness.score > before
+
+    def test_pull_lever_no_puzzle_returns_failure(self, engine_two_rooms):
+        """Pull lever with no puzzle in room returns FAILURE."""
+        engine, _ = engine_two_rooms
+        r = engine.process_input("pull lever")
+        assert r.status == ResultStatus.FAILURE
+
+    def test_recklessness_increases_without_prior_observation(self, engine_two_rooms):
+        """Puzzle action on object without observing first increases recklessness."""
+        engine, wm = engine_two_rooms
+        from src.world.puzzle_state import PuzzleState, PuzzleCategory, PuzzleStatus
+        from src.world.room_state import RoomState, RoomRegion
+        # Add a puzzle room with a statues puzzle
+        wm.rooms["hall_of_guardians"] = RoomState(
+            room_id="hall_of_guardians",
+            region=RoomRegion.OUTER_TEMPLE,
+            accessible_exits={"west": "temple_entrance"},
+            puzzle_id="puzzle_guardian_statues",
+        )
+        wm.rooms["temple_entrance"].accessible_exits["east"] = "hall_of_guardians"
+        wm.puzzles["puzzle_guardian_statues"] = PuzzleState(
+            puzzle_id="puzzle_guardian_statues",
+            room_id="hall_of_guardians",
+            category=PuzzleCategory.LOGIC,
+            status=PuzzleStatus.AVAILABLE,
+        )
+        # Add statue objects
+        from src.world.object_state import StatueDirection
+        for sid, facing in [("statue_guardian_n", StatueDirection.NORTH),
+                             ("statue_guardian_e", StatueDirection.EAST),
+                             ("statue_guardian_s", StatueDirection.SOUTH),
+                             ("statue_guardian_w", StatueDirection.WEST)]:
+            statue_names = {
+                "statue_guardian_n": "Northern Guardian Statue",
+                "statue_guardian_e": "Eastern Guardian Statue",
+                "statue_guardian_s": "Southern Guardian Statue",
+                "statue_guardian_w": "Western Guardian Statue",
+            }
+            wm.objects[sid] = ObjectState(
+                object_id=sid, name=statue_names[sid],
+                category=ObjectCategory.PUZZLE,
+                current_room="hall_of_guardians",
+                facing_direction=facing,
+            )
+            wm.rooms["hall_of_guardians"].object_ids_present.append(sid)
+        engine.process_input("go east")  # move into puzzle room
+        before = wm.evaluation.recklessness.score
+        engine.process_input("rotate northern")
+        # recklessness should increase because player didn't inspect first
+        assert wm.evaluation.recklessness.score > before
+
+    def test_puzzle_in_room_dispatches_to_registry(self, engine_two_rooms):
+        """A valid puzzle command in a puzzle room produces a meaningful response."""
+        engine, wm = engine_two_rooms
+        from src.world.puzzle_state import PuzzleState, PuzzleCategory, PuzzleStatus
+        from src.world.room_state import RoomState, RoomRegion
+        from src.world.object_state import StatueDirection
+        wm.rooms["hall_of_guardians"] = RoomState(
+            room_id="hall_of_guardians", region=RoomRegion.OUTER_TEMPLE,
+            accessible_exits={"west": "temple_entrance"},
+            puzzle_id="puzzle_guardian_statues",
+        )
+        wm.rooms["temple_entrance"].accessible_exits["east"] = "hall_of_guardians"
+        wm.puzzles["puzzle_guardian_statues"] = PuzzleState(
+            puzzle_id="puzzle_guardian_statues", room_id="hall_of_guardians",
+            category=PuzzleCategory.LOGIC, status=PuzzleStatus.AVAILABLE,
+        )
+        for sid, facing in [("statue_guardian_n", StatueDirection.NORTH),
+                             ("statue_guardian_e", StatueDirection.EAST),
+                             ("statue_guardian_s", StatueDirection.SOUTH),
+                             ("statue_guardian_w", StatueDirection.WEST)]:
+            wm.objects[sid] = ObjectState(
+                object_id=sid, name=f"Northern Guardian Statue" if "n" in sid else f"Guardian Statue",
+                category=ObjectCategory.PUZZLE, current_room="hall_of_guardians",
+                facing_direction=facing,
+            )
+            wm.rooms["hall_of_guardians"].object_ids_present.append(sid)
+        engine.process_input("go east")
+        r = engine.process_input("rotate northern")
+        # Should be SUCCESS (partial progress) or FAILURE (no target matched) — not an error
+        assert r.status in (ResultStatus.SUCCESS, ResultStatus.FAILURE)
+        assert r.message  # always has a message
 
 
 # ---------------------------------------------------------------------------

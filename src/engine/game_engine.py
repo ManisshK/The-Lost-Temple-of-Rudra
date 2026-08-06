@@ -8,15 +8,15 @@ Execution pipeline (every command, every turn):
     2. Validate against current World Model state.
     3. Execute the command handler.
     4. Update World Model via write interface.
-    5. Advance turn counter.
-    6. Record history entry.
-    7. Return GameResult.
-
-No Temple AI. No Explorer AI. No narration generation. No puzzle logic.
-No dynamic events. Phase 4 scope: Room System + Object System + Inventory.
+    5. Process puzzle logic (if applicable).
+    6. Process dynamic events (evaluate_events → apply EventEffects).
+    7. Advance turn counter.
+    8. Record history entry.
+    9. Return GameResult.
 
 Blueprint Reference:
     Chapter 8  - Command System & Natural Language Parser
+    Chapter 13 - Dynamic Event Engine
     Chapter 15 - Software Architecture
     Chapter 20 - Development Roadmap
 """
@@ -27,9 +27,22 @@ from typing import Optional
 
 from src.world.world_model import WorldModel
 from src.world.history_state import HistoryEntry
-from src.world.object_state import ObjectCategory
+from src.world.object_state import ObjectCategory, StatueDirection
+from src.world.puzzle_state import PuzzleStatus
+from src.world.story_state import EndingEligibility
+from src.world.events import evaluate_events, EventEffect
+from src.world.events import (
+    EFFECT_SET_FLOOD_LEVEL, EFFECT_SET_FLOOD_ACTIVE, EFFECT_SET_COLLAPSE_STAGE,
+    EFFECT_SET_DUST_DENSITY, EFFECT_SET_WORLD_STABILITY,
+    EFFECT_SET_ROOM_WATER, EFFECT_SET_ROOM_DUST,
+    EFFECT_OPEN_EXIT, EFFECT_CLOSE_EXIT, EFFECT_REVEAL_HIDDEN_PASSAGE,
+    EFFECT_UPDATE_OBJECT, EFFECT_UPDATE_BRIDGE,
+    EFFECT_UPDATE_TORCH, EFFECT_UPDATE_EVALUATION,
+    EFFECT_APPEND_HISTORY, EFFECT_MARK_EVENT_ACTIVE, EFFECT_MARK_EVENT_COMPLETE,
+    EFFECT_RESET_STATUE, EFFECT_SET_FLOOD_STATE,
+)
 from src.utils.constants import (
-    HISTORY_PLAYER_ACTION,
+    HISTORY_PLAYER_ACTION, HISTORY_ENVIRONMENTAL,
     EVAL_OBSERVATION, EVAL_CURIOSITY, EVAL_RECKLESSNESS,
     EVAL_DELTA_OBSERVE, EVAL_DELTA_EXPLORE,
     DIR_NORTH, DIR_SOUTH, DIR_EAST, DIR_WEST,
@@ -103,7 +116,7 @@ class GameEngine:
             # Update world phase from turn manager
             wm.world.temple_phase = self.turn_manager.get_phase()
 
-            # Record history entry
+            # Record player history entry
             entry = HistoryEntry(
                 turn=new_turn,
                 event_id=f"{command.action.value}_{new_turn}",
@@ -112,6 +125,11 @@ class GameEngine:
                 room_id=wm.player.current_room,
             )
             wm._append_history(entry)
+
+            # Process dynamic events after every successful/failed player turn
+            event_effects = evaluate_events(wm, new_turn)
+            for effect in event_effects:
+                self._apply_event_effect(effect, new_turn)
         else:
             result.turn = self.turn_manager.current_turn
 
@@ -478,32 +496,379 @@ class GameEngine:
         )
 
     # ------------------------------------------------------------------
-    # Puzzle handler (stub — Phase 7)
+    # Puzzle handler — Phase 5
     # ------------------------------------------------------------------
 
     def _handle_puzzle(self, command: Command) -> GameResult:
-        target = command.target or "that"
+        """
+        Execute a puzzle interaction command.
+
+        Pipeline:
+            1. Find the puzzle associated with the current room.
+            2. Delegate to PuzzleRegistry.attempt() for validation.
+            3. Apply all world_effects from the result.
+            4. Update PuzzleState.
+            5. Apply evaluation impacts.
+            6. Return GameResult.
+        """
+        from src.world.puzzles import PuzzleRegistry, PuzzleAttemptResult
+
         wm = self.world_model
         turn = self.turn_manager.current_turn
+        target = command.target or ""
+        action_str = command.action.value
 
-        # Track reckless interaction (acting without observing)
-        obj = self._find_object_by_name(target) if command.target else None
-        if obj is not None:
-            observed = any(
-                f"observed_turn_" in h for h in obj.usage_history
+        # Determine which puzzle governs this room
+        current_room = wm.get_current_room()
+        puzzle_id: Optional[str] = None
+        if current_room:
+            puzzle_id = current_room.puzzle_id
+
+        # Allow targeting a specific puzzle object regardless of room
+        # (player may be adjacent or the object has a puzzle_id)
+        if puzzle_id is None and target:
+            obj = self._find_object_by_name(target)
+            if obj and obj.puzzle_id:
+                puzzle_id = obj.puzzle_id
+
+        if puzzle_id is None:
+            # No puzzle in room — track recklessness for puzzle action in wrong place
+            wm._update_evaluation(EVAL_RECKLESSNESS, 0.5,
+                                   f"puzzle action with no puzzle present: {action_str}", turn)
+            return GameResult.failure(
+                "There is no puzzle mechanism here that responds to that.",
+                command=command,
             )
+
+        puzzle_state = wm.puzzles.get(puzzle_id)
+        if puzzle_state is None:
+            return GameResult.failure(
+                "The puzzle mechanism seems disconnected from the rest of the temple.",
+                command=command,
+            )
+
+        # Record first attempt turn
+        if puzzle_state.first_attempted_turn is None:
+            wm._update_puzzle_state(puzzle_id, first_attempted_turn=turn + 1)
+
+        # Increment attempt count
+        wm._update_puzzle_state(
+            puzzle_id,
+            attempt_count=puzzle_state.attempt_count + 1,
+            status=PuzzleStatus.IN_PROGRESS if puzzle_state.status == PuzzleStatus.AVAILABLE
+            else puzzle_state.status,
+        )
+
+        # Track recklessness: acting on puzzle without prior observation
+        obj = self._find_object_by_name(target) if target else None
+        if obj is not None:
+            observed = any("observed_turn" in h for h in obj.usage_history)
             if not observed:
                 wm._update_evaluation(
                     EVAL_RECKLESSNESS, 0.5,
                     f"puzzle action on {target} without observing first", turn
                 )
+                wm._update_puzzle_state(puzzle_id, observation_before_action=False)
 
-        return GameResult.success(
-            f"You attempt to {command.action.value} the {target}. "
-            "(Puzzle logic will be implemented in Phase 7.)",
+        # Delegate to registry
+        attempt = PuzzleRegistry.attempt(puzzle_id, action_str, target, wm, puzzle_state)
+
+        # Apply world effects
+        self._apply_puzzle_effects(attempt, puzzle_id, turn)
+
+        # Apply evaluation impacts
+        for attr, delta in attempt.eval_impacts.items():
+            if delta != 0.0:
+                wm._update_evaluation(attr, delta, f"puzzle:{puzzle_id}", turn)
+
+        # Update puzzle status on success
+        if attempt.success:
+            solved_in = (turn + 1) - (puzzle_state.first_attempted_turn or turn + 1)
+            wm._update_puzzle_state(
+                puzzle_id,
+                status=PuzzleStatus.SOLVED,
+                solved_turn=turn + 1,
+                reward_given=True,
+                time_to_solve_turns=max(1, solved_in),
+                solved_without_hints=(puzzle_state.hint_count == 0),
+            )
+            # Mark room as puzzle-solved
+            if current_room and current_room.puzzle_id == puzzle_id:
+                current_room.puzzle_solved = True
+            # Record in history
+            wm._append_history(HistoryEntry(
+                turn=turn + 1,
+                event_id=f"puzzle_solved_{puzzle_id}_{turn + 1}",
+                category="puzzle",
+                description=f"Puzzle solved: {puzzle_id}",
+                room_id=wm.player.current_room,
+            ))
+            return GameResult.success(
+                attempt.message,
+                command=command,
+                actions_taken=[f"puzzle_solved:{puzzle_id}"],
+                data={"puzzle_id": puzzle_id, "solved": True},
+            )
+
+        # Failure
+        if not attempt.partial:
+            wm._update_puzzle_state(
+                puzzle_id,
+                failure_count=puzzle_state.failure_count + 1,
+                failure_history=[
+                    *puzzle_state.failure_history,
+                    f"{action_str}_{target}_turn_{turn}",
+                ],
+            )
+
+        return GameResult.failure(
+            attempt.message,
             command=command,
-            actions_taken=[f"puzzle_action:{command.action.value}:{target}"],
+        ) if not attempt.partial else GameResult.success(
+            attempt.message,
+            command=command,
+            actions_taken=[f"puzzle_progress:{puzzle_id}"],
+            data={"puzzle_id": puzzle_id, "partial": True},
         )
+
+    def _apply_puzzle_effects(
+        self,
+        attempt: "PuzzleAttemptResult",  # type: ignore[name-defined]
+        puzzle_id: str,
+        turn: int,
+    ) -> None:
+        """Apply world_effects from a PuzzleAttemptResult to the World Model."""
+        from src.world.object_state import StatueDirection
+
+        wm = self.world_model
+        effects = attempt.world_effects
+
+        for key, value in effects.items():
+            if key == "rotate_statue":
+                statue_id, direction_str = value
+                try:
+                    new_dir = StatueDirection(direction_str)
+                except ValueError:
+                    continue
+                wm._update_object_state(
+                    statue_id,
+                    facing_direction=new_dir,
+                    state=f"facing_{direction_str}",
+                    rotation_count=(wm.objects[statue_id].rotation_count + 1
+                                    if statue_id in wm.objects else 1),
+                    last_rotated_turn=turn + 1,
+                )
+                # Record in statue reset tracker
+                wm.dynamic_events.statues.last_rotated[statue_id] = turn + 1
+
+            elif key == "open_exit":
+                room_id, direction, destination = value
+                room = wm.rooms.get(room_id)
+                if room:
+                    room.accessible_exits[direction] = destination
+
+            elif key == "close_exit":
+                room_id, direction = value
+                room = wm.rooms.get(room_id)
+                if room and direction in room.accessible_exits:
+                    del room.accessible_exits[direction]
+
+            elif key == "update_object_state":
+                obj_id, obj_kwargs = value
+                wm._update_object_state(obj_id, **obj_kwargs)
+
+            elif key == "update_object_state_2":
+                obj_id, obj_kwargs = value
+                wm._update_object_state(obj_id, **obj_kwargs)
+
+            elif key == "update_puzzle_progress":
+                wm._update_puzzle_state(puzzle_id, current_progress=value)
+
+            elif key == "trigger_flood":
+                wm.dynamic_events.flood.active = True
+                wm.dynamic_events.flood.start_turn = turn + 1
+
+            elif key == "activate_water_wheel":
+                wm.dynamic_events.flood.water_wheel_active = True
+
+            elif key == "reveal_hidden_passage":
+                room_id, direction = value
+                room = wm.rooms.get(room_id)
+                if room:
+                    room.hidden_passages[direction] = True
+
+            elif key == "update_event_state":
+                # ("water_gates", gate_id, state)
+                sub_key, gate_id, gate_state = value
+                if sub_key == "water_gates":
+                    wm.dynamic_events.water_gates[gate_id] = gate_state
+                    if gate_state:
+                        wm.dynamic_events.flood.flood_gates_open.append(gate_id)
+
+            elif key == "consume_object":
+                obj_id = value
+                if obj_id in wm.player.inventory:
+                    wm._remove_from_inventory(obj_id, wm.player.current_room)
+                    wm._update_object_state(obj_id, state="used", condition=0.0,
+                                            interactable=False)
+
+            elif key == "set_ending_eligibility":
+                try:
+                    wm.story.ending_eligibility = EndingEligibility(value)
+                except ValueError:
+                    pass
+
+    # ------------------------------------------------------------------
+    # Event effect applicator
+    # ------------------------------------------------------------------
+
+    def _apply_event_effect(self, effect: EventEffect, turn: int) -> None:
+        """
+        Apply a single EventEffect to the World Model.
+
+        Called after every player turn to process dynamic events.
+        All writes go through the World Model's write interface.
+
+        Blueprint Reference: Chapter 13 — Dynamic Event Engine.
+        """
+        wm = self.world_model
+        p = effect.payload
+
+        try:
+            etype = effect.effect_type
+
+            if etype == EFFECT_UPDATE_TORCH:
+                wm.player.torch.fuel = p["fuel"]
+                wm.player.torch.state = p["state"]
+                wm.player.torch.brightness = p["brightness"]
+
+            elif etype == EFFECT_SET_FLOOD_LEVEL:
+                wm.world.flood_level = p["flood_level"]
+
+            elif etype == EFFECT_SET_FLOOD_ACTIVE:
+                wm.dynamic_events.flood.active = p["active"]
+                if "start_turn" in p:
+                    wm.dynamic_events.flood.start_turn = p["start_turn"]
+
+            elif etype == EFFECT_SET_FLOOD_STATE:
+                state = wm.dynamic_events.flood
+                state.current_stage = p.get("current_stage", state.current_stage)
+                for room_id in p.get("affected_rooms", []):
+                    if room_id not in state.affected_rooms:
+                        state.affected_rooms.append(room_id)
+                if not wm.dynamic_events.active_events.__contains__("flood"):
+                    wm.dynamic_events.active_events.append("flood")
+
+            elif etype == EFFECT_SET_COLLAPSE_STAGE:
+                wm.world.collapse_stage = p["collapse_stage"]
+                wm.dynamic_events.collapse.current_stage = p["stage"]
+                if not wm.dynamic_events.collapse.active:
+                    wm.dynamic_events.collapse.active = True
+                    wm.dynamic_events.collapse.start_turn = turn
+                if not wm.story.collapse_sequence_started:
+                    wm.story.collapse_sequence_started = True
+
+            elif etype == EFFECT_SET_DUST_DENSITY:
+                wm.dynamic_events.dust.global_density = p["global_density"]
+                wm.world.dust_density = p["global_density"]
+
+            elif etype == EFFECT_SET_WORLD_STABILITY:
+                wm.world.world_stability = max(0.0, min(100.0, p["world_stability"]))
+
+            elif etype == EFFECT_SET_ROOM_WATER:
+                room = wm.rooms.get(p["room_id"])
+                if room:
+                    room.water_level = min(100.0, p["water_level"])
+
+            elif etype == EFFECT_SET_ROOM_DUST:
+                room = wm.rooms.get(p["room_id"])
+                if room:
+                    room.dust_level = min(100.0, p["dust_level"])
+
+            elif etype == EFFECT_OPEN_EXIT:
+                room = wm.rooms.get(p["room_id"])
+                if room:
+                    room.accessible_exits[p["direction"]] = p["destination"]
+
+            elif etype == EFFECT_CLOSE_EXIT:
+                room = wm.rooms.get(p["room_id"])
+                if room and p["direction"] in room.accessible_exits:
+                    del room.accessible_exits[p["direction"]]
+
+            elif etype == EFFECT_REVEAL_HIDDEN_PASSAGE:
+                room = wm.rooms.get(p["room_id"])
+                if room:
+                    room.hidden_passages[p["direction"]] = True
+
+            elif etype == EFFECT_UPDATE_OBJECT:
+                obj_id = p.pop("object_id", None)
+                if obj_id:
+                    wm._update_object_state(obj_id, **p)
+
+            elif etype == EFFECT_UPDATE_BRIDGE:
+                bridge_id = p["bridge_id"]
+                new_integrity = p["integrity"]
+                wm.dynamic_events.bridge.integrity[bridge_id] = new_integrity
+                if new_integrity <= 0.0:
+                    if bridge_id not in wm.dynamic_events.bridge.collapsed_bridges:
+                        wm.dynamic_events.bridge.collapsed_bridges.append(bridge_id)
+
+            elif etype == EFFECT_RESET_STATUE:
+                from src.world.object_state import StatueDirection
+                statue_id = p["statue_id"]
+                direction_str = p["direction"]
+                try:
+                    original_dir = StatueDirection(direction_str)
+                except ValueError:
+                    return
+                wm._update_object_state(
+                    statue_id,
+                    facing_direction=original_dir,
+                    state=f"facing_{direction_str}",
+                )
+                # Reset puzzle progress
+                puzzle = wm.puzzles.get("puzzle_guardian_statues")
+                if puzzle:
+                    progress = puzzle.current_progress.copy()
+                    progress["statues_correct"] = 0
+                    wm._update_puzzle_state(
+                        "puzzle_guardian_statues",
+                        current_progress=progress,
+                        status=PuzzleStatus.AVAILABLE,
+                    )
+
+            elif etype == EFFECT_UPDATE_EVALUATION:
+                attr = p.get("attribute")
+                delta = p.get("delta", 0.0)
+                reason = p.get("reason", "event")
+                if attr:
+                    wm._update_evaluation(attr, delta, reason, turn)
+
+            elif etype == EFFECT_APPEND_HISTORY:
+                entry = HistoryEntry(
+                    turn=p.get("turn", turn),
+                    event_id=p.get("event_id", effect.event_id),
+                    category=p.get("category", HISTORY_ENVIRONMENTAL),
+                    description=p.get("description", effect.description),
+                    room_id=p.get("room_id", wm.player.current_room),
+                )
+                wm._append_history(entry)
+
+            elif etype == EFFECT_MARK_EVENT_ACTIVE:
+                event_id = p.get("event_id", effect.event_id)
+                if event_id and event_id not in wm.dynamic_events.active_events:
+                    wm.dynamic_events.active_events.append(event_id)
+
+            elif etype == EFFECT_MARK_EVENT_COMPLETE:
+                event_id = p.get("event_id", effect.event_id)
+                if event_id in wm.dynamic_events.active_events:
+                    wm.dynamic_events.active_events.remove(event_id)
+                if event_id and event_id not in wm.dynamic_events.completed_events:
+                    wm.dynamic_events.completed_events.append(event_id)
+
+        except Exception:  # noqa: BLE001
+            # Event effects must never crash the game
+            pass
 
     # ------------------------------------------------------------------
     # Knowledge handler

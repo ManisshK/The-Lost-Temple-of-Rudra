@@ -20,9 +20,14 @@ Blueprint Reference:
 from __future__ import annotations
 
 import copy
-import json
-from dataclasses import dataclass, field, asdict
-from typing import Optional
+from dataclasses import dataclass, field
+from typing import Optional, TYPE_CHECKING
+
+if TYPE_CHECKING:
+    # Imported at runtime only when methods are called, preventing circular imports
+    # during the dataclass field resolution phase.
+    from .serializer import WorldModelDeserializationError  # noqa: F401
+    from .validator import ValidationResult, WorldModelValidationError  # noqa: F401
 
 from .player_state import PlayerState
 from .world_state import WorldState
@@ -360,31 +365,89 @@ class WorldModel:
         self.world.current_turn += 1
 
     # ---------------------------------------------------------------------------
-    # SERIALISATION — used by Save Manager
+    # SERIALISATION & DESERIALISATION — used by Save Manager
+    # Blueprint Reference: Chapter 10.7 — Save & Load Architecture
     # ---------------------------------------------------------------------------
 
     def to_dict(self) -> dict:
         """
-        Serialises the entire World Model to a plain dictionary.
-        Used by SaveManager to write JSON save files.
-        Enums are converted to their string values for JSON compatibility.
+        Serialises the entire World Model to a plain JSON-compatible dictionary.
+
+        - Enums → their .value (str or int)
+        - sets  → sorted list  (StoryState.symbols_encountered)
+        - tuples → list        (EvaluationAttribute.change_history entries)
+        - All nested dataclasses recursively converted.
+
+        Delegates to serializer.world_model_to_dict().
         """
-        return asdict(self)
+        from .serializer import world_model_to_dict  # noqa: PLC0415
+        return world_model_to_dict(self)
 
     @classmethod
     def from_dict(cls, data: dict) -> WorldModel:
         """
-        Deserialises a World Model from a plain dictionary.
-        Used by SaveManager to restore game state from a JSON save file.
+        Deserialises a WorldModel from a plain dictionary.
 
-        TODO: Implement full deserialisation once all state structures are finalised.
-        This stub is a placeholder — full implementation belongs to Phase 9 (Save/Load).
+        Reconstructs every Enum, nested dataclass, set, and tuple correctly.
+        Safe to call with data produced by to_dict().
+
+        Raises:
+            WorldModelDeserializationError — if required keys are missing or
+            values are invalid (e.g. unknown Enum member).
+
+        Delegates to serializer.world_model_from_dict().
         """
-        # TODO: Reconstruct all nested dataclasses and re-instantiate enums correctly.
-        raise NotImplementedError(
-            "Full deserialisation implemented in Phase 9 — Save & Load System."
-        )
+        from .serializer import world_model_from_dict  # noqa: PLC0415
+        return world_model_from_dict(data)
 
     def to_json(self, indent: int = 2) -> str:
-        """Returns the World Model as a formatted JSON string."""
-        return json.dumps(self.to_dict(), indent=indent, default=str)
+        """
+        Serialises the World Model to a formatted JSON string.
+        Delegates to serializer.world_model_to_json().
+        """
+        from .serializer import world_model_to_json  # noqa: PLC0415
+        return world_model_to_json(self, indent=indent)
+
+    @classmethod
+    def from_json(cls, json_str: str) -> WorldModel:
+        """
+        Deserialises a WorldModel from a JSON string.
+
+        Raises:
+            WorldModelDeserializationError — on malformed JSON or invalid data.
+
+        Delegates to serializer.world_model_from_json().
+        """
+        from .serializer import world_model_from_json  # noqa: PLC0415
+        return world_model_from_json(json_str)
+
+    # ---------------------------------------------------------------------------
+    # VALIDATION — delegates to validator module
+    # Blueprint Reference: Chapter 10.8 — State Validation
+    # ---------------------------------------------------------------------------
+
+    def validate(self) -> ValidationResult:
+        """
+        Runs all integrity checks against this World Model.
+
+        Returns a ValidationResult with any errors and warnings found.
+        Does NOT modify the World Model.
+
+        Usage:
+            result = world_model.validate()
+            if not result.is_valid:
+                print(result)
+        """
+        from .validator import validate  # noqa: PLC0415
+        return validate(self)
+
+    def validate_or_raise(self) -> None:
+        """
+        Runs all integrity checks. Raises WorldModelValidationError if any
+        errors are found. Intended for Game Engine update paths.
+
+        Usage:
+            world_model.validate_or_raise()  # raises if invalid
+        """
+        from .validator import validate_or_raise  # noqa: PLC0415
+        validate_or_raise(self)

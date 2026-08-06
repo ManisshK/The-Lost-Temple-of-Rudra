@@ -67,15 +67,32 @@ class GameEngine:
     Blueprint Reference: Chapter 15.4 — Game Engine module responsibilities.
     """
 
-    def __init__(self, world_model: WorldModel, debug_mode: bool = False) -> None:
+    def __init__(
+        self,
+        world_model: WorldModel,
+        debug_mode: bool = False,
+        ai_manager=None,
+    ) -> None:
         self.world_model = world_model
         self.parser = CommandParser(debug_mode=debug_mode)
         self.turn_manager = TurnManager()
         self._debug_mode = debug_mode
+        # AI Manager — optional; lazy-initialised on first AI command if None
+        self._ai_manager = ai_manager
 
     # ------------------------------------------------------------------
     # Primary entry point
     # ------------------------------------------------------------------
+
+    def _get_ai_manager(self):
+        """Lazy-initialise AI Manager on first use."""
+        if self._ai_manager is None:
+            try:
+                from src.ai.ai_manager import AIManager
+                self._ai_manager = AIManager()
+            except Exception:  # noqa: BLE001
+                self._ai_manager = None
+        return self._ai_manager
 
     def process_input(self, raw_input: str) -> GameResult:
         """
@@ -130,6 +147,9 @@ class GameEngine:
             event_effects = evaluate_events(wm, new_turn)
             for effect in event_effects:
                 self._apply_event_effect(effect, new_turn)
+
+            # Notify Temple AI of the action (read-only evaluation)
+            self._notify_temple_ai(command, result, new_turn)
         else:
             result.turn = self.turn_manager.current_turn
 
@@ -893,12 +913,23 @@ class GameEngine:
         )
 
     # ------------------------------------------------------------------
-    # AI handler (stub — Phase 11/12)
+    # AI handler — Phase 6
     # ------------------------------------------------------------------
 
     def _handle_ai(self, command: Command) -> GameResult:
-        if command.action == Action.STATUS:
-            wm = self.world_model
+        """
+        Route AI commands (hint, recommend, analyze, think, status)
+        through the AI Manager.
+        """
+        from src.ai.ai_manager import AIRequest
+
+        wm = self.world_model
+        action = command.action
+        target = command.target or ""
+        ai = self._get_ai_manager()
+
+        # STATUS — always available, no AI needed
+        if action == Action.STATUS:
             return GameResult.info(
                 f"Turn: {self.turn_manager.current_turn} | "
                 f"Phase: {self.turn_manager.get_phase().name} | "
@@ -912,11 +943,84 @@ class GameEngine:
                     "inventory_count": len(wm.player.inventory),
                 },
             )
+
+        if ai is None:
+            return GameResult.info(
+                "The temple's intelligence stirs but does not yet respond.",
+                command=command,
+            )
+
+        # HINT
+        if action == Action.HINT:
+            response = ai.handle(AIRequest("hint"), wm)
+            puzzle = wm.get_current_room()
+            if puzzle and puzzle.puzzle_id:
+                ps = wm.puzzles.get(puzzle.puzzle_id)
+                if ps:
+                    wm._update_puzzle_state(
+                        puzzle.puzzle_id,
+                        hint_count=ps.hint_count + 1,
+                        hint_level=min(2, ps.hint_level + 1),
+                        solved_without_hints=False,
+                    )
+            text = response.text or "The temple offers no guidance here."
+            return GameResult.info(text, command=command)
+
+        # RECOMMEND
+        if action == Action.RECOMMEND:
+            response = ai.handle(AIRequest("recommend"), wm)
+            text = response.text or "No recommendation available at this time."
+            return GameResult.info(text, command=command)
+
+        # ANALYZE
+        if action == Action.ANALYZE:
+            response = ai.handle(AIRequest("analyze"), wm)
+            text = response.text or "Nothing stands out for analysis right now."
+            return GameResult.info(text, command=command)
+
+        # THINK (history/reflection)
+        if action == Action.THINK:
+            response = ai.handle(AIRequest("reflect"), wm)
+            text = response.text or "No discoveries to reflect upon yet."
+            return GameResult.info(text, command=command)
+
         return GameResult.info(
-            "The temple's intelligence is not yet fully awakened. "
-            "(AI integration arrives in Phase 11.)",
+            "The temple's intelligence stirs but does not yet respond.",
             command=command,
         )
+
+    def _notify_temple_ai(
+        self, command: Command, result, turn: int
+    ) -> None:
+        """
+        Notify the Temple AI of a completed player action.
+        Applies any returned evaluation deltas to the World Model.
+        This is called AFTER events — it never raises.
+        """
+        try:
+            from src.ai.ai_manager import AIRequest
+            ai = self._get_ai_manager()
+            if ai is None:
+                return
+            req = AIRequest(
+                request_type="observe_action",
+                action_str=command.action.value,
+                target=command.target or "",
+                result_success=result.status.value == "success",
+            )
+            response = ai.handle(req, self.world_model)
+            # Apply evaluation deltas returned by Temple AI
+            for attr, delta in response.eval_deltas.items():
+                if delta != 0.0:
+                    try:
+                        self.world_model._update_evaluation(
+                            attr, delta,
+                            f"temple_ai:{command.action.value}", turn
+                        )
+                    except Exception:
+                        pass
+        except Exception:  # noqa: BLE001 — AI must never crash the game
+            pass
 
     # ------------------------------------------------------------------
     # System handler

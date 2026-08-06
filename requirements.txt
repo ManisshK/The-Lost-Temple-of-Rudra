@@ -3,12 +3,14 @@
 # --- Testing ---
 pytest>=9.0
 
-# --- UI Framework (confirm before Phase 5) ---
+# --- AI / LLM (optional — used by OllamaProvider when Ollama is enabled) ---
+# The OllamaProvider uses Python's built-in urllib — no external HTTP library
+# required for basic operation. If you prefer requests, uncomment below.
+# requests          # HTTP client for Ollama API (optional alternative)
+
+# --- UI Framework (confirm before Phase 7) ---
 # pygame
 # customtkinter
-
-# --- AI / LLM ---
-# requests          # HTTP client for Ollama API
 
 # --- Data Validation ---
 # pydantic          # World Model schema validation

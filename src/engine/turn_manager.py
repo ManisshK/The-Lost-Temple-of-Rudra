@@ -1,14 +1,38 @@
-"""
-turn_manager.py — The Lost Temple of Rudra
+from __future__ import annotations
+from dataclasses import dataclass
+from src.world.world_state import TemplePhase
 
-Manages the turn counter and time-based world progression.
-Each valid player command advances the turn counter by one.
-Time-based dynamic events (flood rise, torch decay, bridge weakening)
-are scheduled relative to turn count and temple phase.
+PHASE_THRESHOLDS: dict[TemplePhase, int] = {
+    TemplePhase.DISCOVERY:     0,
+    TemplePhase.UNDERSTANDING: 30,
+    TemplePhase.ADAPTATION:    60,
+    TemplePhase.JUDGMENT:      90,
+}
 
-TODO: Implement turn counter (increment on each valid command execution).
-TODO: Implement time-based event scheduling (flood every N turns, etc.).
-TODO: Implement temple phase tracker (early / mid / late / final).
-TODO: Implement elapsed real-time tracking (optional, for evaluation metrics).
-TODO: Provide current turn and phase data to World Model after each increment.
-"""
+@dataclass
+class TurnManager:
+    current_turn: int = 0
+    current_phase: TemplePhase = TemplePhase.DISCOVERY
+
+    def advance(self) -> int:
+        self.current_turn += 1
+        self._update_phase()
+        return self.current_turn
+
+    def get_phase(self) -> TemplePhase:
+        return self.current_phase
+
+    def is_phase(self, phase: TemplePhase) -> bool:
+        return self.current_phase == phase
+
+    def reset(self) -> None:
+        self.current_turn = 0
+        self.current_phase = TemplePhase.DISCOVERY
+
+    def _update_phase(self) -> None:
+        for phase, threshold in sorted(
+            PHASE_THRESHOLDS.items(), key=lambda x: x[1], reverse=True
+        ):
+            if self.current_turn >= threshold:
+                self.current_phase = phase
+                break

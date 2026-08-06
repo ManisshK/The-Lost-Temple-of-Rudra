@@ -1,0 +1,20 @@
+{
+  "ollama": {
+    "enabled": false,
+    "host": "http://localhost:11434",
+    "model": "qwen",
+    "timeout_seconds": 30,
+    "temperature": 0.7,
+    "max_tokens": 512
+  },
+  "temple_ai": {
+    "evaluation_enabled": true,
+    "narration_enabled": true,
+    "silent_judgment": true
+  },
+  "explorer_ai": {
+    "recommendation_enabled": true,
+    "confidence_threshold": 0.6,
+    "max_suggestions": 1
+  }
+}

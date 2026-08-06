@@ -1,0 +1,15 @@
+# THE LOST TEMPLE OF RUDRA — Python Dependencies
+# Phase 1: Scaffold only. Expand as implementation progresses.
+
+# --- UI Framework (confirm before Phase 5) ---
+# pygame
+# customtkinter
+
+# --- AI / LLM ---
+# requests          # HTTP client for Ollama API
+
+# --- Data Validation ---
+# pydantic          # World Model schema validation
+
+# --- Terminal Formatting (optional text UI) ---
+# rich

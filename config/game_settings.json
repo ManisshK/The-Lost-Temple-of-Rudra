@@ -1,0 +1,23 @@
+{
+  "game": {
+    "title": "The Lost Temple of Rudra",
+    "version": "0.1.0",
+    "debug_mode": true,
+    "language": "en",
+    "autosave": true,
+    "autosave_interval_turns": 10
+  },
+  "gameplay": {
+    "torch_burn_rate": 1,
+    "flood_rise_rate": 1,
+    "bridge_decay_rate": 1,
+    "max_inventory_size": 10
+  },
+  "display": {
+    "text_speed": "normal",
+    "show_world_model_panel": true,
+    "show_ai_recommendation_panel": true,
+    "show_mission_panel": true,
+    "show_inventory_panel": true
+  }
+}

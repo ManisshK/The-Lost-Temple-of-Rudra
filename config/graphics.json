@@ -1,0 +1,27 @@
+{
+  "window": {
+    "title": "The Lost Temple of Rudra",
+    "width": 1280,
+    "height": 800,
+    "resizable": true,
+    "fullscreen": false
+  },
+  "fonts": {
+    "primary": "assets/fonts/primary.ttf",
+    "secondary": "assets/fonts/secondary.ttf",
+    "size_normal": 14,
+    "size_large": 20,
+    "size_title": 36
+  },
+  "theme": {
+    "background_color": "#0a0a0a",
+    "text_color": "#d4b896",
+    "accent_color": "#8b4513",
+    "panel_color": "#1a1208",
+    "border_color": "#5c3d1e"
+  },
+  "panels": {
+    "narrative_width_percent": 60,
+    "sidebar_width_percent": 40
+  }
+}

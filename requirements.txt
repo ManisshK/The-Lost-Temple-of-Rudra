@@ -1,5 +1,7 @@
 # THE LOST TEMPLE OF RUDRA — Python Dependencies
-# Phase 1: Scaffold only. Expand as implementation progresses.
+
+# --- Testing ---
+pytest>=9.0
 
 # --- UI Framework (confirm before Phase 5) ---
 # pygame

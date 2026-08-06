@@ -1,19 +1,24 @@
 # THE LOST TEMPLE OF RUDRA — Python Dependencies
+# Python 3.11+ required.
 
 # --- Testing ---
 pytest>=9.0
 
-# --- AI / LLM (optional — used by OllamaProvider when Ollama is enabled) ---
-# The OllamaProvider uses Python's built-in urllib — no external HTTP library
-# required for basic operation. If you prefer requests, uncomment below.
-# requests          # HTTP client for Ollama API (optional alternative)
+# --- GUI (tkinter is stdlib — no install needed) ---
+# tkinter is bundled with CPython on Windows, macOS, and most Linux distros.
+# If your Python build lacks tkinter, install it via your system package manager.
 
-# --- UI Framework (confirm before Phase 7) ---
-# pygame
-# customtkinter
+# --- Audio (optional — silently disabled if absent) ---
+# pygame>=2.5          # Audio engine — uncomment to enable sound
 
-# --- Data Validation ---
-# pydantic          # World Model schema validation
+# --- AI / LLM (optional — OllamaProvider uses stdlib urllib) ---
+# requests>=2.31       # Alternative HTTP client for Ollama (optional)
 
-# --- Terminal Formatting (optional text UI) ---
-# rich
+# --- Packaging (optional — only needed to build distributable) ---
+# pyinstaller>=6.0     # Windows/macOS/Linux executable builder
+
+# --- Data Validation (optional) ---
+# pydantic>=2.0        # World Model schema validation
+
+# --- Terminal Formatting (optional — CLI only) ---
+# rich>=13.0           # Coloured terminal output

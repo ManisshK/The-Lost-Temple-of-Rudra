@@ -1,0 +1,26 @@
+{
+  "ambience": {
+    "temple":    "ambience/temple_ambience.ogg",
+    "water":     "ambience/water_drip.ogg",
+    "wind":      "ambience/wind.ogg",
+    "machinery": "ambience/machinery_hum.ogg"
+  },
+  "sfx": {
+    "pickup":        "sfx/pickup.ogg",
+    "puzzle_solved": "sfx/puzzle_solved.ogg",
+    "door_unlock":   "sfx/door_unlock.ogg",
+    "stone_move":    "sfx/stone_move.ogg",
+    "footstep":      "sfx/footstep.ogg",
+    "torch_light":   "sfx/torch_light.ogg",
+    "torch_out":     "sfx/torch_out.ogg",
+    "water_splash":  "sfx/water_splash.ogg"
+  },
+  "music": {
+    "exploration": "music/calm_exploration.ogg",
+    "tension":     "music/puzzle_tension.ogg",
+    "judgment":    "music/ai_judgment.ogg",
+    "ending_good": "music/ending_worthy.ogg",
+    "ending_bad":  "music/ending_unworthy.ogg",
+    "title":       "music/title_theme.ogg"
+  }
+}

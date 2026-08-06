@@ -12,13 +12,13 @@ Execution pipeline (every command, every turn):
     6. Record history entry.
     7. Return GameResult.
 
-No Temple AI. No Explorer AI. No narration. No puzzle logic.
-No dynamic events. No room content. Phase 3 scope only.
+No Temple AI. No Explorer AI. No narration generation. No puzzle logic.
+No dynamic events. Phase 4 scope: Room System + Object System + Inventory.
 
 Blueprint Reference:
     Chapter 8  - Command System & Natural Language Parser
     Chapter 15 - Software Architecture
-    Chapter 20 - Development Roadmap (Phase 6)
+    Chapter 20 - Development Roadmap
 """
 
 from __future__ import annotations
@@ -27,6 +27,7 @@ from typing import Optional
 
 from src.world.world_model import WorldModel
 from src.world.history_state import HistoryEntry
+from src.world.object_state import ObjectCategory
 from src.utils.constants import (
     HISTORY_PLAYER_ACTION,
     EVAL_OBSERVATION, EVAL_CURIOSITY, EVAL_RECKLESSNESS,
@@ -158,7 +159,7 @@ class GameEngine:
         target = command.target
         turn = self.turn_manager.current_turn
 
-        # LOOK / LOOK AROUND — describe current room (stub; narration is Phase 11)
+        # LOOK / LOOK AROUND — describe current room
         if action == Action.LOOK:
             room = wm.get_current_room()
             if room is None:
@@ -166,13 +167,52 @@ class GameEngine:
                     "You stand in an undefined space. Something has gone wrong.",
                     command=command,
                 )
+
+            # Try to get a description from the room definition
+            from src.world.rooms import ROOM_DEFINITIONS
+            rd = ROOM_DEFINITIONS.get(room.room_id)
+            description = rd.description if rd else (
+                f"You survey {wm.player.current_room.replace('_', ' ')}."
+            )
+
+            # List visible objects in the room
+            visible_objects = [
+                wm.objects[oid].name
+                for oid in room.object_ids_present
+                if oid in wm.objects and wm.objects[oid].visible
+            ]
+
+            # List accessible exits
+            exits = list(room.accessible_exits.keys())
+
             wm._update_evaluation(EVAL_CURIOSITY, EVAL_DELTA_OBSERVE,
                                    "looked around room", turn)
             room.times_inspected += 1
+
+            # Mark room as visited
+            if not room.visited:
+                room.visited = True
+                room.first_visited_turn = turn + 1
+
+            obj_line = ""
+            if visible_objects:
+                obj_line = " You can see: " + ", ".join(visible_objects) + "."
+            exit_line = ""
+            if exits:
+                exit_line = " Exits: " + ", ".join(exits) + "."
+
             return GameResult.success(
-                f"You survey {wm.player.current_room.replace('_', ' ')}.",
+                description + obj_line + exit_line,
                 command=command,
                 actions_taken=["room_inspected", "curiosity+"],
+                data={
+                    "room_id": room.room_id,
+                    "exits": exits,
+                    "objects_present": [
+                        oid for oid in room.object_ids_present
+                        if oid in wm.objects and wm.objects[oid].visible
+                    ],
+                },
             )
 
         # INSPECT / READ / LISTEN / TOUCH / SMELL — target required
@@ -187,15 +227,30 @@ class GameEngine:
         obj = self._find_object_by_name(target)
 
         if obj is not None:
+            # Use the object definition description if available
+            from src.world.objects import OBJECT_DEFINITIONS
+            od = OBJECT_DEFINITIONS.get(obj.object_id)
+            obj_description = od.description if od else f"The {target}."
+
             obj.usage_history.append(f"observed_turn_{turn}")
-            obj.times_inspected = getattr(obj, "times_inspected", 0) + 1 \
-                if hasattr(obj, "times_inspected") else 1
+            if not hasattr(obj, "times_inspected"):
+                obj.times_inspected = 1
+            else:
+                obj.times_inspected = getattr(obj, "times_inspected", 0) + 1
             wm._update_evaluation(EVAL_OBSERVATION, EVAL_DELTA_OBSERVE,
                                    f"inspected {target}", turn)
+
+            # Mark story objects as discovered
+            if obj.state == "undiscovered":
+                wm._update_object_state(obj.object_id, state="discovered")
+                if obj.object_id.startswith("inscription_"):
+                    wm.story.entrance_inscription_read = True
+
             return GameResult.success(
-                f"You carefully examine the {target}.",
+                obj_description,
                 command=command,
                 actions_taken=[f"object_observed:{obj.object_id}", "observation+"],
+                data={"object_id": obj.object_id, "object_state": obj.state},
             )
 
         # Target not found — in-world response (blueprint 8.7)
@@ -333,6 +388,13 @@ class GameEngine:
             if obj is None:
                 return GameResult.failure(
                     f"You see no '{target}' here that can be taken.",
+                    command=command,
+                )
+            # Enforce: only COLLECTIBLE objects may enter inventory
+            if obj.category != ObjectCategory.COLLECTIBLE:
+                return GameResult.failure(
+                    f"The {target} cannot be carried. "
+                    "Some things belong to the temple.",
                     command=command,
                 )
             if not obj.interactable:
